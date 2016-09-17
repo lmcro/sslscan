@@ -6,7 +6,7 @@ This is a fork of ioerror's version of sslscan (the original readme of which is 
 
 * Highlight SSLv2 and SSLv3 ciphers in output.
 * Highlight CBC ciphers on SSLv3 (POODLE)
-* Highlight RC4 ciphers in output.
+* Highlight 3DES and RC4 ciphers in output.
 * Highlight PFS+GCM ciphers as good in output.
 * Highlight NULL (0 bit), weak (<40 bit) and medium (40 < n <= 56) ciphers in output.
 * Highlight anonymous (ADH and AECDH) ciphers in output (purple).
@@ -36,6 +36,8 @@ This is a fork of ioerror's version of sslscan (the original readme of which is 
 * Flag TLSv1.0 ciphers in output as weak.
 * Experimental OSX support (static building only)
 * Support for scanning PostgreSQL servers (credit nuxi)
+* Check for TLS Fallback SCSV support
+* Added StartTLS support for LDAP (--starttls-ldap)
 
 ### Building on Windows
 Thanks to a patch by jtesta, sslscan can now be compiled on Windows. This can

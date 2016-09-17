@@ -57,6 +57,7 @@
 #define tls_v12 6
 
 // Macros for various outputs
+#define printf(format, ...)         if (!xml_to_stdout) fprintf(stdout, format, ##__VA_ARGS__)
 #define printf_error(format, ...)   fprintf(stderr, format, ##__VA_ARGS__)
 #define printf_xml(format, ...)     if (options->xmlOutput) fprintf(options->xmlOutput, format, ##__VA_ARGS__)
 #define printf_verbose(format, ...) if (options->verbose) printf(format, ##__VA_ARGS__)
@@ -122,11 +123,13 @@ struct sslCheckOptions
     int showTimes;
     int ciphersuites;
     int reneg;
+    int fallback;
     int compression;
     int heartbleed;
     int starttls_ftp;
     int starttls_imap;
     int starttls_irc;
+    int starttls_ldap;
     int starttls_pop3;
     int starttls_smtp;
     int starttls_xmpp;
@@ -201,6 +204,7 @@ int freeRenegotiationOutput(struct renegotiationOutput *);
 
 int testCompression(struct sslCheckOptions *, const SSL_METHOD *);
 int testRenegotiation(struct sslCheckOptions *, const SSL_METHOD *);
+int testfallback(struct sslCheckOptions *, const SSL_METHOD *);
 int testHeartbleed(struct sslCheckOptions *, const SSL_METHOD *);
 int testCipher(struct sslCheckOptions *, const SSL_METHOD *);
 int testProtocolCiphers(struct sslCheckOptions *, const SSL_METHOD *);

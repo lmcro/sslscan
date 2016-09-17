@@ -118,6 +118,9 @@ Do not scan for supported ciphersuites.
 .B \-\-no\-renegotiation
 Do not check for secure TLS renegotiation
 .TP
+.B \-\-no\-fallback
+Do not check for TLS Fallback Signaling Cipher Suite Value (fallback)
+.TP
 .B \-\-no\-compression
 Do not check for TLS compression (CRIME)
 .TP
@@ -132,6 +135,9 @@ STARTTLS setup for IRC
 .TP
 .B \-\-starttls\-imap
 STARTTLS setup for IMAP
+.TP
+.B \-\-starttls\-ldap
+STARTTLS setup for LDAP
 .TP
 .B \-\-starttls\-pop3
 STARTTLS setup for POP3
@@ -177,7 +183,7 @@ Pause between connections. Useful on STARTTLS SMTP services, or anything else th
 .TP
 .B \-\-xml=<file>
 .br
-Output results to an XML file
+Output results to an XML file. - can be used to mean stdout.
 .br
 .TP
 .B \-\-no-colour

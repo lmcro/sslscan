@@ -34,6 +34,8 @@
  *   files in the program, then also delete it here.                       *
  ***************************************************************************/
 
+#define _GNU_SOURCE
+
 // Includes...
 #ifdef _WIN32
   #define WIN32_LEAN_AND_MEAN
@@ -101,6 +103,9 @@ static int use_unsafe_renegotiation_op = 0;
 /** Does the run-time openssl version look like we need
  * SSL3_FLAGS_ALLOW_UNSAFE_LEGACY_RENEGOTIATION? */
 static int use_unsafe_renegotiation_flag = 0;
+
+/** Does output xml to stdout? */
+static int xml_to_stdout = 0;
 
 // Adds Ciphers to the Cipher List structure
 int populateCipherList(struct sslCheckOptions *options, const SSL_METHOD *sslMethod)
@@ -433,6 +438,36 @@ int tcpConnect(struct sslCheckOptions *options)
         }
     }
 
+    // Setup a LDAP STARTTLS socket
+    if (options->starttls_ldap == true && tlsStarted == false)
+    {
+        tlsStarted = 1;
+        memset(buffer, 0, BUFFERSIZE);
+        char starttls[] = {'0', 0x1d, 0x02, 0x01, 0x01, 'w', 0x18, 0x80, 0x16,
+            '1', '.', '3', '.', '6', '.', '1', '.', '4', '.', '1', '.',
+            '1', '4', '6', '6', '.', '2', '0', '0', '3', '7'};
+        char ok[] = "1.3.6.1.4.1.1466.20037";
+        char unsupported[] = "unsupported extended operation";
+
+        // Send TLS
+        send(socketDescriptor, starttls, sizeof(starttls), 0);
+        if (!readOrLogAndClose(socketDescriptor, buffer, BUFFERSIZE, options))
+            return 0;
+
+        if (memmem(buffer, BUFFERSIZE, ok, sizeof(ok))) {
+            printf_verbose("STARTLS LDAP setup complete.\n");
+        }
+        else if (memmem(buffer, BUFFERSIZE, unsupported, sizeof(unsupported))) {
+            printf_error("%sSTARTLS LDAP connection to %s:%d failed with '%s'.%s\n",
+                         COL_RED, options->host, options->port, unsupported, RESET);
+            return 0;
+        } else {
+            printf_error("%sSTARTLS LDAP connection to %s:%d failed with unknown error.%s\n",
+                         COL_RED, options->host, options->port, RESET);
+            return 0;
+        }
+    }
+
     // Setup a FTP STARTTLS socket
     if (options->starttls_ftp == true && tlsStarted == false)
     {
@@ -646,11 +681,17 @@ int outputRenegotiation( struct sslCheckOptions *options, struct renegotiationOu
         outputData->supported, outputData->secure);
 
     if (outputData->secure)
+    {
         printf("%sSecure%s session renegotiation supported\n\n", COL_GREEN, RESET);
+    }
     else if (outputData->supported)
+    {
         printf("%sInsecure%s session renegotiation supported\n\n", COL_RED, RESET);
+    }
     else
+    {
        printf("Session renegotiation %snot supported%s\n\n", COL_GREEN, RESET);
+    }
 
     return true;
 }
@@ -833,6 +874,176 @@ int testCompression(struct sslCheckOptions *options, const SSL_METHOD *sslMethod
     return status;
 }
 
+// Check for TLS_FALLBACK_SCSV
+int testFallback(struct sslCheckOptions *options,  const SSL_METHOD *sslMethod)
+{
+    // Variables...
+    int status = true;
+    int downgraded = true;
+    int connStatus = false;
+    int socketDescriptor = 0;
+    int sslversion;
+    SSL *ssl = NULL;
+    BIO *cipherConnectionBio;
+    const SSL_METHOD *secondMethod;
+
+    // Function gets called a second time with downgraded protocol
+    if (!sslMethod)
+    {
+        sslMethod = SSLv23_method();
+        downgraded = false;
+    }
+
+    // Connect to host
+    socketDescriptor = tcpConnect(options);
+    if (socketDescriptor != 0)
+    {
+        // Setup Context Object...
+        options->ctx = SSL_CTX_new(sslMethod);
+        tls_reneg_init(options);
+        if (options->ctx != NULL)
+        {
+            if (downgraded)
+            {
+                SSL_CTX_set_mode(options->ctx, SSL_MODE_SEND_FALLBACK_SCSV);
+            }
+            if (SSL_CTX_set_cipher_list(options->ctx, "ALL:COMPLEMENTOFALL") != 0)
+            {
+
+                // Load Certs if required...
+                if ((options->clientCertsFile != 0) || (options->privateKeyFile != 0))
+                    status = loadCerts(options);
+
+                if (status == true)
+                {
+                    // Create SSL object...
+                    ssl = SSL_new(options->ctx);
+
+#if ( OPENSSL_VERSION_NUMBER > 0x009080cfL )
+                    // Make sure we can connect to insecure servers
+                    // OpenSSL is going to change the default at a later date
+                    SSL_set_options(ssl, SSL_OP_LEGACY_SERVER_CONNECT);
+#endif
+
+#ifdef SSL_OP_NO_COMPRESSION
+                    // Make sure to clear the no compression flag
+                    SSL_clear_options(ssl, SSL_OP_NO_COMPRESSION);
+#endif
+
+                   if (ssl != NULL)
+                    {
+                        // Connect socket and BIO
+                        cipherConnectionBio = BIO_new_socket(socketDescriptor, BIO_NOCLOSE);
+
+                        // Connect SSL and BIO
+                        SSL_set_bio(ssl, cipherConnectionBio, cipherConnectionBio);
+
+#if OPENSSL_VERSION_NUMBER >= 0x0090806fL && !defined(OPENSSL_NO_TLSEXT)
+                        // This enables TLS SNI
+                        SSL_set_tlsext_host_name(ssl, options->host);
+#endif
+
+                        // Connect SSL over socket
+                        connStatus = SSL_connect(ssl);
+                        if (connStatus)
+                        {
+                            if (!downgraded)
+                            {
+                                sslversion = SSL_version(ssl);
+                                if (sslversion == TLS1_2_VERSION)
+                                {
+                                    secondMethod = TLSv1_1_client_method();
+                                }
+                                else if (sslversion == TLS1_VERSION)
+                                {
+                                    secondMethod = TLSv1_client_method();
+                                }
+                                else if (sslversion == TLS1_VERSION)
+                                {
+                                    printf("Server only supports TLSv1.0");
+                                    status = false;
+                                }
+                                else
+                                {
+                                    printf("Server doesn't support TLS - skipping TLS Fallback SCSV check\n\n");
+                                    status = false;
+                                }
+                            }
+                            else
+                            {
+                                printf("Server %sdoes not%s support TLS Fallback SCSV\n\n", COL_RED, RESET);
+                            }
+                        }
+                        else
+                        {
+                            if (downgraded)
+                            {
+                                if (SSL_get_error(ssl, connStatus == 1))
+                                {
+                                    ERR_get_error();
+                                    if (SSL_get_error(ssl, connStatus == 6))
+                                    {
+                                        printf("Server %ssupports%s TLS Fallback SCSV\n\n", COL_GREEN, RESET);
+                                        status = false;
+                                    }
+                                }
+                            }
+                            else
+                            {
+                                printf("%sConnection failed%s - unable to determine TLS Fallback SCSV support\n\n",
+                                        COL_YELLOW, RESET);
+                                status = false;
+                            }
+                        }
+
+                        // Disconnect SSL over socket
+                        SSL_shutdown(ssl);
+
+                        // Free SSL object
+                        SSL_free(ssl);
+                    }
+                    else
+                    {
+                        status = false;
+                        printf_error("%s    ERROR: Could create SSL object.%s\n", COL_RED, RESET);
+                    }
+                }
+            }
+            else
+            {
+                status = false;
+                printf_error("%s    ERROR: Could set cipher.%s\n", COL_RED, RESET);
+            }
+            // Free CTX Object
+            SSL_CTX_free(options->ctx);
+        }
+        // Error Creating Context Object
+        else
+        {
+            status = false;
+            printf_error("%sERROR: Could not create CTX object.%s\n", COL_RED, RESET);
+        }
+
+        // Disconnect from host
+        close(socketDescriptor);
+    }
+    else
+    {
+        // Could not connect
+        printf_error("%sERROR: Could not connect.%s\n", COL_RED, RESET);
+        status = false;
+        exit(status);
+    }
+
+    // Call function again with downgraded protocol
+    if (status && !downgraded)
+    {
+        testFallback(options, secondMethod);
+    }
+    return status;
+}
+
+
 // Check if the server supports renegotiation
 int testRenegotiation(struct sslCheckOptions *options, const SSL_METHOD *sslMethod)
 {
@@ -932,10 +1143,10 @@ int testRenegotiation(struct sslCheckOptions *options, const SSL_METHOD *sslMeth
                             {
 #endif
                                 // We can't assume that just because the secure renegotiation
-                                // support failed the server doesn't support insecure renegotiations·
+                                // support failed the server doesn't support insecure renegotiations
 
                                 // assume ssl is connected and error free up to here
-                                //setBlocking(ssl); // this is unnecessary if it is already blocking·
+                                //setBlocking(ssl); // this is unnecessary if it is already blocking
                                 printf_verbose("Attempting SSL_renegotiate(ssl)\n");
                                 SSL_renegotiate(ssl); // Ask to renegotiate the connection
                                 // This hangs when an 'encrypted alert' is sent by the server
@@ -1312,8 +1523,10 @@ int testCipher(struct sslCheckOptions *options, const SSL_METHOD *sslMethod)
                     {
 
                         // Stdout BIO...
-                        stdoutBIO = BIO_new(BIO_s_file());
-                        BIO_set_fp(stdoutBIO, stdout, BIO_NOCLOSE);
+                        if (!xml_to_stdout) {
+                            stdoutBIO = BIO_new(BIO_s_file());
+                            BIO_set_fp(stdoutBIO, stdout, BIO_NOCLOSE);
+                        }
 
                         // HTTP Get...
                         SSL_write(ssl, requestBuffer, sizeof(requestBuffer));
@@ -1420,7 +1633,7 @@ int testCipher(struct sslCheckOptions *options, const SSL_METHOD *sslMethod)
                 {
                     printf("%s%-29s%s", COL_RED, sslCipherPointer->name, RESET);
                 }
-                else if (strstr(sslCipherPointer->name, "RC4"))
+                else if (strstr(sslCipherPointer->name, "RC4") || strstr(sslCipherPointer->name, "DES"))
                 {
                     printf("%s%-29s%s", COL_YELLOW, sslCipherPointer->name, RESET);
                 }
@@ -1578,8 +1791,10 @@ int checkCertificate(struct sslCheckOptions *options, const SSL_METHOD *sslMetho
                         if (cipherStatus == 1)
                         {
                             // Setup BIO's
-                            stdoutBIO = BIO_new(BIO_s_file());
-                            BIO_set_fp(stdoutBIO, stdout, BIO_NOCLOSE);
+                            if (!xml_to_stdout) {
+                                stdoutBIO = BIO_new(BIO_s_file());
+                                BIO_set_fp(stdoutBIO, stdout, BIO_NOCLOSE);
+                            }
                             if (options->xmlOutput)
                             {
                                 fileBIO = BIO_new(BIO_s_file());
@@ -1996,8 +2211,10 @@ int ocspRequest(struct sslCheckOptions *options)
                         if (cipherStatus == 1)
                         {
                             // Setup BIO's
-                            stdoutBIO = BIO_new(BIO_s_file());
-                            BIO_set_fp(stdoutBIO, stdout, BIO_NOCLOSE);
+                            if (!xml_to_stdout) {
+                                stdoutBIO = BIO_new(BIO_s_file());
+                                BIO_set_fp(stdoutBIO, stdout, BIO_NOCLOSE);
+                            }
                             if (options->xmlOutput)
                             {
                                 fileBIO = BIO_new(BIO_s_file());
@@ -2263,8 +2480,10 @@ int showCertificate(struct sslCheckOptions *options)
                         if (cipherStatus == 1)
                         {
                             // Setup BIO's
-                            stdoutBIO = BIO_new(BIO_s_file());
-                            BIO_set_fp(stdoutBIO, stdout, BIO_NOCLOSE);
+                            if (!xml_to_stdout) {
+                                stdoutBIO = BIO_new(BIO_s_file());
+                                BIO_set_fp(stdoutBIO, stdout, BIO_NOCLOSE);
+                            }
                             if (options->xmlOutput)
                             {
                                 fileBIO = BIO_new(BIO_s_file());
@@ -2554,9 +2773,13 @@ int showCertificate(struct sslCheckOptions *options)
                                 printf("  Verify Certificate:\n");
                                 verifyError = SSL_get_verify_result(ssl);
                                 if (verifyError == X509_V_OK)
+                                {
                                     printf("    Certificate passed verification\n");
+                                }
                                 else
+                                {
                                     printf("    %s\n", X509_verify_cert_error_string(verifyError));
+                                }
 
                                 // Free X509 Certificate...
                                 X509_free(x509Cert);
@@ -2700,8 +2923,10 @@ int showTrustedCAs(struct sslCheckOptions *options)
                         if (cipherStatus >= 0)
                         {
                             // Setup BIO's
-                            stdoutBIO = BIO_new(BIO_s_file());
-                            BIO_set_fp(stdoutBIO, stdout, BIO_NOCLOSE);
+                            if (!xml_to_stdout) {
+                                stdoutBIO = BIO_new(BIO_s_file());
+                                BIO_set_fp(stdoutBIO, stdout, BIO_NOCLOSE);
+                            }
                             if (options->xmlOutput)
                             {
                                 fileBIO = BIO_new(BIO_s_file());
@@ -2955,6 +3180,12 @@ int testHost(struct sslCheckOptions *options)
         }
         printf("\n");
     }
+
+    if (status == true && options->fallback )
+    {
+        printf("  %sTLS Fallback SCSV:%s\n", COL_BLUE, RESET);
+        testFallback(options, NULL);
+    }
     
     if (status == true && options->reneg )
     {
@@ -3138,11 +3369,13 @@ int main(int argc, char *argv[])
     options.showTimes = false;
     options.ciphersuites = true;
     options.reneg = true;
+    options.fallback = true;
     options.compression = true;
     options.heartbleed = true;
     options.starttls_ftp = false;
     options.starttls_imap = false;
     options.starttls_irc = false;
+    options.starttls_ldap = false;
     options.starttls_pop3 = false;
     options.starttls_smtp = false;
     options.starttls_xmpp = false;
@@ -3261,6 +3494,10 @@ int main(int argc, char *argv[])
         else if (strcmp("--no-ciphersuites", argv[argLoop]) == 0)
             options.ciphersuites = false;
 
+        // Should we check for TLS Falback SCSV?
+        else if (strcmp("--no-fallback", argv[argLoop]) == 0)
+            options.fallback = false;
+
         // Should we check for TLS renegotiation?
         else if (strcmp("--no-renegotiation", argv[argLoop]) == 0)
             options.reneg = false;
@@ -3283,6 +3520,10 @@ int main(int argc, char *argv[])
 
         else if (strcmp("--starttls-irc", argv[argLoop]) == 0)
             options.starttls_irc = true;
+
+        // StartTLS... LDAP
+        else if (strcmp("--starttls-ldap", argv[argLoop]) == 0)
+            options.starttls_ldap = true;
 
         // StartTLS... POP3
         else if (strcmp("--starttls-pop3", argv[argLoop]) == 0)
@@ -3414,8 +3655,16 @@ int main(int argc, char *argv[])
 
             // Get port (if it exists)...
             tempInt++;
-            if (tempInt < maxSize - 1)
-                options.port = atoi(hostString + tempInt);
+            if (tempInt < maxSize)
+            {
+                errno = 0;
+                options.port = strtol((hostString + tempInt), NULL, 10);
+                if (options.port < 1 || options.port > 65535)
+                {
+                    printf("\n%sInvalid port specified%s\n\n", COL_RED, RESET);
+                    exit(1);
+                }
+            }
             else if (options.port == 0) {
                 if (options.starttls_ftp)
                     options.port = 21;
@@ -3423,6 +3672,8 @@ int main(int argc, char *argv[])
                     options.port = 143;
                 else if (options.starttls_irc)
                     options.port = 6667;
+                else if (options.starttls_ldap)
+                    options.port = 389;
                 else if (options.starttls_pop3)
                     options.port = 110;
                 else if (options.starttls_smtp)
@@ -3446,11 +3697,19 @@ int main(int argc, char *argv[])
     // Open XML file output...
     if ((xmlArg > 0) && (mode != mode_help))
     {
-        options.xmlOutput = fopen(argv[xmlArg] + 6, "w");
-        if (options.xmlOutput == NULL)
+        if (strcmp(argv[xmlArg] + 6, "-") == 0)
         {
-            printf_error("%sERROR: Could not open XML output file %s.%s\n", COL_RED, argv[xmlArg] + 6, RESET);
-            exit(0);
+            options.xmlOutput = stdout;
+            xml_to_stdout = 1;
+        }
+        else
+        {
+            options.xmlOutput = fopen(argv[xmlArg] + 6, "w");
+            if (options.xmlOutput == NULL)
+            {
+                printf_error("%sERROR: Could not open XML output file %s.%s\n", COL_RED, argv[xmlArg] + 6, RESET);
+                exit(0);
+            }
         }
 
         // Output file header...
@@ -3522,12 +3781,14 @@ int main(int argc, char *argv[])
             printf("  %s--pkpass=<password>%s  The password for the private  key or PKCS#12 file\n", COL_GREEN, RESET);
             printf("  %s--certs=<file>%s       A file containing PEM/ASN1 formatted client certificates\n", COL_GREEN, RESET);
             printf("  %s--no-ciphersuites%s    Do not check for supported ciphersuites\n", COL_GREEN, RESET);
+            printf("  %s--no-fallback%s        Do not check for TLS Fallback SCSV\n", COL_GREEN, RESET);
             printf("  %s--no-renegotiation%s   Do not check for TLS renegotiation\n", COL_GREEN, RESET);
             printf("  %s--no-compression%s     Do not check for TLS compression (CRIME)\n", COL_GREEN, RESET);
             printf("  %s--no-heartbleed%s      Do not check for OpenSSL Heartbleed (CVE-2014-0160)\n", COL_GREEN, RESET);
             printf("  %s--starttls-ftp%s       STARTTLS setup for FTP\n", COL_GREEN, RESET);
             printf("  %s--starttls-imap%s      STARTTLS setup for IMAP\n", COL_GREEN, RESET);
             printf("  %s--starttls-irc%s       STARTTLS setup for IRC\n", COL_GREEN, RESET);
+            printf("  %s--starttls-ldap%s      STARTTLS setup for LDAP\n", COL_GREEN, RESET);
             printf("  %s--starttls-pop3%s      STARTTLS setup for POP3\n", COL_GREEN, RESET);
             printf("  %s--starttls-smtp%s      STARTTLS setup for SMTP\n", COL_GREEN, RESET);
             printf("  %s--starttls-xmpp%s      STARTTLS setup for XMPP\n", COL_GREEN, RESET);
@@ -3539,6 +3800,7 @@ int main(int argc, char *argv[])
             printf("  %s--timeout=<sec>%s      Set socket timeout. Default is 3s\n", COL_GREEN, RESET);
             printf("  %s--sleep=<msec>%s       Pause between connection request. Default is disabled\n", COL_GREEN, RESET);
             printf("  %s--xml=<file>%s         Output results to an XML file\n", COL_GREEN, RESET);
+            printf("                       <file> can be -, which means stdout\n");
             printf("  %s--version%s            Display the program version\n", COL_GREEN, RESET);
             printf("  %s--verbose%s            Display verbose output\n", COL_GREEN, RESET);
 #if OPENSSL_VERSION_NUMBER >= 0x10002000L
