@@ -454,10 +454,18 @@ int tcpConnect(struct sslCheckOptions *options)
         if (!readOrLogAndClose(socketDescriptor, buffer, BUFFERSIZE, options))
             return 0;
 
+#ifdef __USE_GNU
         if (memmem(buffer, BUFFERSIZE, ok, sizeof(ok))) {
+#else
+        if (strnstr(buffer, ok, BUFFERSIZE)) {
+#endif
             printf_verbose("STARTLS LDAP setup complete.\n");
         }
+#ifdef __USE_GNU
         else if (memmem(buffer, BUFFERSIZE, unsupported, sizeof(unsupported))) {
+#else
+        else if (strnstr(buffer, unsupported, BUFFERSIZE)) {
+#endif
             printf_error("%sSTARTLS LDAP connection to %s:%d failed with '%s'.%s\n",
                          COL_RED, options->host, options->port, unsupported, RESET);
             return 0;
@@ -801,7 +809,7 @@ int testCompression(struct sslCheckOptions *options, const SSL_METHOD *sslMethod
 
 #if OPENSSL_VERSION_NUMBER >= 0x0090806fL && !defined(OPENSSL_NO_TLSEXT)
                         // This enables TLS SNI
-                        SSL_set_tlsext_host_name(ssl, options->host);
+                        SSL_set_tlsext_host_name(ssl, options->sniname);
 #endif
 
                         // Connect SSL over socket
@@ -874,6 +882,7 @@ int testCompression(struct sslCheckOptions *options, const SSL_METHOD *sslMethod
     return status;
 }
 
+#ifdef SSL_MODE_SEND_FALLBACK_SCSV
 // Check for TLS_FALLBACK_SCSV
 int testFallback(struct sslCheckOptions *options,  const SSL_METHOD *sslMethod)
 {
@@ -940,7 +949,7 @@ int testFallback(struct sslCheckOptions *options,  const SSL_METHOD *sslMethod)
 
 #if OPENSSL_VERSION_NUMBER >= 0x0090806fL && !defined(OPENSSL_NO_TLSEXT)
                         // This enables TLS SNI
-                        SSL_set_tlsext_host_name(ssl, options->host);
+                        SSL_set_tlsext_host_name(ssl, options->sniname);
 #endif
 
                         // Connect SSL over socket
@@ -1042,6 +1051,7 @@ int testFallback(struct sslCheckOptions *options,  const SSL_METHOD *sslMethod)
     }
     return status;
 }
+#endif
 
 
 // Check if the server supports renegotiation
@@ -1106,7 +1116,7 @@ int testRenegotiation(struct sslCheckOptions *options, const SSL_METHOD *sslMeth
                         // untested.  Please report success or failure!  However, this code change
                         // has worked fine in other projects to which the contributor has added it,
                         // or HTTP usage.
-                        SSL_set_tlsext_host_name(ssl, options->host);
+                        SSL_set_tlsext_host_name(ssl, options->sniname);
 #endif
 
                         // Connect SSL over socket
@@ -1483,7 +1493,7 @@ int testCipher(struct sslCheckOptions *options, const SSL_METHOD *sslMethod)
 
 #if OPENSSL_VERSION_NUMBER >= 0x0090806fL && !defined(OPENSSL_NO_TLSEXT)
                 // This enables TLS SNI
-                SSL_set_tlsext_host_name (ssl, options->host);
+                SSL_set_tlsext_host_name (ssl, options->sniname);
 #endif
 
                 // Connect SSL over socket
@@ -1783,7 +1793,7 @@ int checkCertificate(struct sslCheckOptions *options, const SSL_METHOD *sslMetho
                         // untested.  Please report success or failure!  However, this code change
                         // has worked fine in other projects to which the contributor has added it,
                         // or HTTP usage.
-                        SSL_set_tlsext_host_name (ssl, options->host);
+                        SSL_set_tlsext_host_name (ssl, options->sniname);
 #endif
 
                         // Connect SSL over socket
@@ -2201,7 +2211,7 @@ int ocspRequest(struct sslCheckOptions *options)
                         // untested.  Please report success or failure!  However, this code change
                         // has worked fine in other projects to which the contributor has added it,
                         // or HTTP usage.
-                        SSL_set_tlsext_host_name (ssl, options->host);
+                        SSL_set_tlsext_host_name (ssl, options->sniname);
 #endif
 						SSL_set_tlsext_status_type(ssl, TLSEXT_STATUSTYPE_ocsp);
 						SSL_CTX_set_tlsext_status_cb(options->ctx, ocsp_resp_cb);
@@ -2472,7 +2482,7 @@ int showCertificate(struct sslCheckOptions *options)
                         // untested.  Please report success or failure!  However, this code change
                         // has worked fine in other projects to which the contributor has added it,
                         // or HTTP usage.
-                        SSL_set_tlsext_host_name (ssl, options->host);
+                        SSL_set_tlsext_host_name (ssl, options->sniname);
 #endif
 
                         // Connect SSL over socket
@@ -2915,7 +2925,7 @@ int showTrustedCAs(struct sslCheckOptions *options)
                         // untested.  Please report success or failure!  However, this code change
                         // has worked fine in other projects to which the contributor has added it,
                         // or HTTP usage.
-                        SSL_set_tlsext_host_name (ssl, options->host);
+                        SSL_set_tlsext_host_name (ssl, options->sniname);
 #endif
 
                         // Connect SSL over socket
@@ -3180,13 +3190,16 @@ int testHost(struct sslCheckOptions *options)
         }
         printf("\n");
     }
-
     if (status == true && options->fallback )
     {
         printf("  %sTLS Fallback SCSV:%s\n", COL_BLUE, RESET);
+#ifdef SSL_MODE_SEND_FALLBACK_SCSV
         testFallback(options, NULL);
+#else
+        printf("%sOpenSSL version does not support SCSV fallback%s\n\n", COL_RED, RESET);
+
+#endif
     }
-    
     if (status == true && options->reneg )
     {
         printf("  %sTLS renegotiation:%s\n", COL_BLUE, RESET);
@@ -3607,6 +3620,13 @@ int main(int argc, char *argv[])
 		else if (strcmp("--ocsp", argv[argLoop]) == 0)
 			options.ocspStatus = true;
 
+        // SNI name
+        else if (strncmp("--sni-name=", argv[argLoop], 11) == 0)
+            strncpy(options.sniname, argv[argLoop]+11, strlen(argv[argLoop])-11);
+
+		else if (strcmp("--ocsp", argv[argLoop]) == 0)
+			options.ocspStatus = true;
+
 
         // Host (maybe port too)...
         else if (argLoop + 1 == argc)
@@ -3652,6 +3672,12 @@ int main(int argc, char *argv[])
                     hostString[tempInt] = 0;
 
             strncpy(options.host, hostString, sizeof(options.host) -1);
+
+            // No SNI name passed on command line
+            if (strlen(options.sniname) == 0)
+            {
+                strncpy(options.sniname, options.host, sizeof(options.host));
+            }
 
             // Get port (if it exists)...
             tempInt++;
@@ -3755,6 +3781,7 @@ int main(int argc, char *argv[])
             printf("%sOptions:%s\n", COL_BLUE, RESET);
             printf("  %s--targets=<file>%s     A file containing a list of hosts to check.\n", COL_GREEN, RESET);
             printf("                       Hosts can  be supplied  with ports (host:port)\n");
+            printf("  %s--sni-name=<name>%s    Hostname for SNI\n", COL_GREEN, RESET);
             printf("  %s--ipv4%s               Only use IPv4\n", COL_GREEN, RESET);
             printf("  %s--ipv6%s               Only use IPv6\n", COL_GREEN, RESET);
             printf("  %s--show-certificate%s   Show full certificate information\n", COL_GREEN, RESET);
@@ -3781,7 +3808,9 @@ int main(int argc, char *argv[])
             printf("  %s--pkpass=<password>%s  The password for the private  key or PKCS#12 file\n", COL_GREEN, RESET);
             printf("  %s--certs=<file>%s       A file containing PEM/ASN1 formatted client certificates\n", COL_GREEN, RESET);
             printf("  %s--no-ciphersuites%s    Do not check for supported ciphersuites\n", COL_GREEN, RESET);
+#ifdef SSL_MODE_SEND_FALLBACK_SCSV
             printf("  %s--no-fallback%s        Do not check for TLS Fallback SCSV\n", COL_GREEN, RESET);
+#endif
             printf("  %s--no-renegotiation%s   Do not check for TLS renegotiation\n", COL_GREEN, RESET);
             printf("  %s--no-compression%s     Do not check for TLS compression (CRIME)\n", COL_GREEN, RESET);
             printf("  %s--no-heartbleed%s      Do not check for OpenSSL Heartbleed (CVE-2014-0160)\n", COL_GREEN, RESET);
