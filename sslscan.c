@@ -133,6 +133,24 @@ static int xml_to_stdout = 0;
 unsigned long SSL_CIPHER_get_id(const SSL_CIPHER* cipher) { return cipher->id; }
 #endif
 
+// Helper function to recv from socket until EOF or an error
+static ssize_t recvall(int sockfd, void *buf, size_t len, int flags)
+{
+    size_t remaining = len;
+    char *bufptr = buf;
+    do
+    {
+        ssize_t actual = recv(sockfd, bufptr, remaining, flags);
+        if (actual <= 0) // premature eof or an error?
+        {
+            return actual;
+        }
+        bufptr += actual;
+        remaining -= actual;
+    } while (remaining != 0);
+    return (ssize_t) len;
+}
+
 // Adds Ciphers to the Cipher List structure
 int populateCipherList(struct sslCheckOptions *options, const SSL_METHOD *sslMethod)
 {
@@ -218,7 +236,7 @@ int readOrLogAndClose(int fd, void* buffer, size_t len, const struct sslCheckOpt
     if (len < 2)
         return 1;
 
-    n = recv(fd, buffer, len - 1, 0);
+    n = recvall(fd, buffer, len - 1, 0);
 
     if (n < 0 && errno != 11) {
         printf_error("%s    ERROR: error reading from %s:%d: %s%s\n", COL_RED, options->host, options->port, strerror(errno), RESET);
@@ -549,7 +567,7 @@ int tcpConnect(struct sslCheckOptions *options)
         send(socketDescriptor, "\x00\x00\x00\x08\x04\xd2\x16\x2f", 8, 0);
 
         // Read reply byte
-        if (1 != recv(socketDescriptor, &buffer, 1, 0)) {
+        if (1 != recvall(socketDescriptor, &buffer, 1, 0)) {
             printf_error("%s    ERROR: unexpected EOF reading from %s:%d%s\n", COL_RED, options->host, options->port, RESET);
             return 0;
         }
@@ -573,7 +591,7 @@ int tcpConnect(struct sslCheckOptions *options)
         send(socketDescriptor, "\x03\x00\x00\x13\x0e\xe0\x00\x00\x00\x00\x00\x01\x00\x08\x00\x03\x00\x00\x00", 19, 0);
 
         // Read reply header
-        if (4 != recv(socketDescriptor, buffer, 4, 0)) {
+        if (4 != recvall(socketDescriptor, buffer, 4, 0)) {
             printf_error("%s    ERROR: unexpected EOF reading from %s:%d%s\n", COL_RED, options->host, options->port, RESET);
             return 0;
         }
@@ -587,7 +605,7 @@ int tcpConnect(struct sslCheckOptions *options)
         }
 
         // Read reply data
-        if (readlen != recv(socketDescriptor, buffer, readlen, 0)) {
+        if (readlen != recvall(socketDescriptor, buffer, readlen, 0)) {
             printf_error("%s    ERROR: unexpected EOF reading from %s:%d%s\n", COL_RED, options->host, options->port, RESET);
             return 0;
         }
@@ -1004,13 +1022,13 @@ int testFallback(struct sslCheckOptions *options,  const SSL_METHOD *sslMethod)
                                 if (sslversion == TLS1_2_VERSION)
                                 {
                                     secondMethod = TLSv1_1_client_method();
+                                }
+                                else if (sslversion == TLS1_1_VERSION)
+                                {
+                                    secondMethod = TLSv1_client_method();
                                 } else
 #endif
                                 if (sslversion == TLS1_VERSION)
-                                {
-                                    secondMethod = TLSv1_client_method();
-                                }
-                                else if (sslversion == TLS1_VERSION)
                                 {
                                     printf("Server only supports TLSv1.0");
                                     status = false;
@@ -1024,6 +1042,7 @@ int testFallback(struct sslCheckOptions *options,  const SSL_METHOD *sslMethod)
                             else
                             {
                                 printf("Server %sdoes not%s support TLS Fallback SCSV\n\n", COL_RED, RESET);
+                                printf_xml("  <fallback supported=\"0\" />\n");
                             }
                         }
                         else
@@ -1036,6 +1055,7 @@ int testFallback(struct sslCheckOptions *options,  const SSL_METHOD *sslMethod)
                                     if (SSL_get_error(ssl, connStatus == 6))
                                     {
                                         printf("Server %ssupports%s TLS Fallback SCSV\n\n", COL_GREEN, RESET);
+                                        printf_xml("  <fallback supported=\"1\" />\n");
                                         status = false;
                                     }
                                 }
@@ -1303,6 +1323,7 @@ const char* printableSslMethod(const SSL_METHOD *sslMethod)
 }
 
 // Test for Heartbleed
+
 int testHeartbleed(struct sslCheckOptions *options, const SSL_METHOD *sslMethod)
 {
     // Variables...
@@ -1366,7 +1387,7 @@ int testHeartbleed(struct sslCheckOptions *options, const SSL_METHOD *sslMethod)
             memset(hbbuf, 0, sizeof(hbbuf));
 
             // Read 5 byte header
-            int readResult = recv(socketDescriptor, hbbuf, 5, 0);
+            int readResult = recvall(socketDescriptor, hbbuf, 5, 0);
             if (readResult <= 0)
             {
                 break;
@@ -1385,7 +1406,7 @@ int testHeartbleed(struct sslCheckOptions *options, const SSL_METHOD *sslMethod)
             memset(hbbuf, 0, sizeof(hbbuf));
 
             // Read rest of record
-            readResult = recv(socketDescriptor, hbbuf, ln, 0);
+            readResult = recvall(socketDescriptor, hbbuf, ln, 0);
             if (readResult <= 0)
             {
                 break;
@@ -1678,11 +1699,7 @@ int testCipher(struct sslCheckOptions *options, const SSL_METHOD *sslMethod)
                 {
                     printf("%s%-29s%s", COL_PURPLE, sslCipherPointer->name, RESET);
                 }
-                else if (strstr(sslCipherPointer->name, "EXP")
-#ifndef OPENSSL_NO_SSL3
-                        || (strcmp(cleanSslMethod, "SSLv3") == 0 && !strstr(sslCipherPointer->name, "RC4"))
-#endif
-                        )
+                else if (strstr(sslCipherPointer->name, "EXP"))
                 {
                     printf("%s%-29s%s", COL_RED, sslCipherPointer->name, RESET);
                 }
