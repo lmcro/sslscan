@@ -2,6 +2,8 @@
 
 [![Build Status](https://travis-ci.org/rbsec/sslscan.svg?branch=master)](https://travis-ci.org/rbsec/sslscan)
 
+See the **sslscan2** branch for a beta build of the new version, which supports TLSv1.3.
+
 This is a fork of ioerror's version of sslscan (the original readme of which is included below). Changes are as follows:
 
 * Highlight SSLv2 and SSLv3 ciphers in output.
@@ -61,7 +63,7 @@ required to compile OpenSSL from source on OS X. Once you have, just run:
 
 ### OpenSSL issues
 
-#### OpenSSL 1.1.0 Support
+#### OpenSSL 1.1.0 and later
 OpenSSL 1.1.0 introduced a number of significant changes, including the removal
 of old and insecure features such as SSLv2. While this is a very good thing for
 the SSL ecosystem as a whole, it is a problem for sslscan, which relies on
@@ -71,6 +73,35 @@ In order to work around this, sslscan builds against [Peter Mosmans'](https://gi
 fork of OpenSSL, which backports the Chacha20 and Poly1305 ciphers to OpenSSL
 1.0.2, while keeping the dangerous legacy features (such as SSLv2 and EXPORT
 ciphers) enabled.
+
+### TLSv1.3 and the future of sslscan
+
+Since the OpenSSL made the (very sensible) choice to remove support for legacy
+and insecure protocols and ciphers, sslscan has relied on a fork of OpenSSL by
+[Peter Mossmans](https://github.com/PeterMosmans/openssl) which provided support
+for both these legacy ciphers and newly added ciphers (such as ChaCha). However,
+this fork of OpenSSL does not support TLSv1.3. To my knowledge there is no
+version of OpenSSL which supports both the legacy crypto (SSLv2, EXPORT ciphers,
+etc) and TLSv1.3 - which means that it is not possible to build sslscan with
+support for both.
+
+The primary goal of sslscan is to identify misconfigurations and security
+weaknesses in the SSL configuration of a target system, so support for the
+legacy ciphers and protocols is much more important than for the newer
+(secure) protocols like TLSv1.3 - however over time this will change as
+new vulnerabilities are found.
+
+Supporting both SSLv2 an TLSv1.3 in sslscan would either require a fork of
+OpenSSL with all the new code backported (which would be increasingly difficult
+to maintain over time), or a complete rewrite of sslscan to not rely on the
+OpenSSL library. This is not a project that I have the time available for
+at present, and if I did, it would probably be a better investment of time
+to work on one of the other SSL scanning tools, rather than starting from scratch.
+
+As such, sslscan should be considered  legacy. I will still maintain it as far
+as I have time, but it is unlikely to ever support TLSv1.3,  unless an OpenSSL
+fork is created by someone else that supports this while maintaining the insecure
+crypto that sslscan requires to be useful.
 
 #### Statically linking a custom OpenSSL build
 
@@ -106,15 +137,18 @@ You can verify whether you have a statically linked OpenSSL version, if
 looks a bit like
 
         1.x.y-...-static
-        OpenSSL 1.1.0-dev xx XXX xxxx
+        OpenSSL 1.0.2-chacha xx XXX xxxx
 
-(pay attention to the `-static` suffix and the `1.1.0-dev` OpenSSL version).
+(pay attention to the `-static` suffix and the `1.0.2-chacha` OpenSSL version).
 
 
 #### Building on Kali
 Kali now ships with a statically built version of sslscan which supports SSLv2.
+You can install it with:
 
-The package can be found in the [Kali Git Repository](http://git.kali.org/gitweb/?p=packages/sslscan.git;a=summary).
+    apt install sslscan
+
+The package can be found in the [Kali Git Repository](https://gitlab.com/kalilinux/packages/sslscan).
 
 If for whatever reason you can't install this package, follow the instructions
 above for statically building against OpenSSL.

@@ -1030,7 +1030,7 @@ int testFallback(struct sslCheckOptions *options,  const SSL_METHOD *sslMethod)
 #endif
                                 if (sslversion == TLS1_VERSION)
                                 {
-                                    printf("Server only supports TLSv1.0");
+                                    printf("Server only supports TLSv1.0\n\n");
                                     status = false;
                                 }
                                 else
@@ -1521,6 +1521,7 @@ int testCipher(struct sslCheckOptions *options, const SSL_METHOD *sslMethod)
     char hexCipherId[10];
     int resultSize = 0;
     int cipherbits;
+    char *strength;
     uint32_t cipherid;
     const SSL_CIPHER *sslCipherPointer;
     const char *cleanSslMethod = printableSslMethod(sslMethod);
@@ -1568,11 +1569,24 @@ int testCipher(struct sslCheckOptions *options, const SSL_METHOD *sslMethod)
 
                 if (cipherStatus == 0)
                 {
+                    SSL_free(ssl);
                     return false;
                 }
                 else if (cipherStatus != 1)
                 {
-                    printf_verbose("SSL_get_error(ssl, cipherStatus) said: %d\n", SSL_get_error(ssl, cipherStatus));
+                    tempInt = SSL_get_error(ssl, cipherStatus);
+                    printf_verbose("SSL_get_error(ssl, cipherStatus) returned: %d (%s)\n", tempInt, SSL_ERR_to_string(tempInt));
+
+                    // I'd rather use ERR_print_errors(BIO) instead of this loop, but it needs a BIO for stdout/stderr which we
+                    // don't have yet.
+                    while (ERR_peek_error() > 0)
+                    {
+                        printf_verbose("[%s:%s@%d]:%s\n", __FILE__, __func__, __LINE__, ERR_error_string(ERR_peek_error(), NULL));
+                        // Dequeue the error, since we only peeked at it. Can't put this in the line above or we'll loop
+                        // forever when not in verbose mode.
+                        ERR_get_error();
+                    }
+                    SSL_free(ssl);
                     return false;
                 }
 
@@ -1694,27 +1708,33 @@ int testCipher(struct sslCheckOptions *options, const SSL_METHOD *sslMethod)
                 if (strstr(sslCipherPointer->name, "NULL"))
                 {
                     printf("%s%-29s%s", COL_RED_BG, sslCipherPointer->name, RESET);
+                    strength = "null";
                 }
                 else if (strstr(sslCipherPointer->name, "ADH") || strstr(sslCipherPointer->name, "AECDH"))
                 {
                     printf("%s%-29s%s", COL_PURPLE, sslCipherPointer->name, RESET);
+                    strength = "anonymous";
                 }
                 else if (strstr(sslCipherPointer->name, "EXP"))
                 {
                     printf("%s%-29s%s", COL_RED, sslCipherPointer->name, RESET);
+                    strength = "weak";
                 }
                 else if (strstr(sslCipherPointer->name, "RC4") || strstr(sslCipherPointer->name, "DES"))
                 {
                     printf("%s%-29s%s", COL_YELLOW, sslCipherPointer->name, RESET);
+                    strength = "medium";
                 }
                 else if ((strstr(sslCipherPointer->name, "CHACHA20") || (strstr(sslCipherPointer->name, "GCM")))
                         && strstr(sslCipherPointer->name, "DHE"))
                 {
                     printf("%s%-29s%s", COL_GREEN, sslCipherPointer->name, RESET);
+                    strength = "strong";
                 }
                 else
                 {
                     printf("%-29s", sslCipherPointer->name);
+                    strength = "acceptable";
                 }
 
                 if (options->cipher_details == true)
@@ -1733,7 +1753,7 @@ int testCipher(struct sslCheckOptions *options, const SSL_METHOD *sslMethod)
                 }
 
                 printf("\n");
-                printf_xml(" />\n");
+                printf_xml(" strength=\"%s\" />\n", strength);
 
                 // Disconnect SSL over socket
                 if (cipherStatus == 1)
@@ -1898,20 +1918,22 @@ int checkCertificate(struct sslCheckOptions *options, const SSL_METHOD *sslMetho
                                     strtok(certAlgorithm, "\n");
                                     if (strstr(certAlgorithm, "md5") || strstr(certAlgorithm, "sha1"))
                                     {
+                                        printf_xml("   <signature-algorithm strength=\"weak\">");
                                         printf("%s%s%s\n", COL_RED, certAlgorithm, RESET);
                                     }
                                     else if (strstr(certAlgorithm, "sha512") || strstr(certAlgorithm, "sha256"))
                                     {
+                                        printf_xml("   <signature-algorithm strength=\"strong\">");
                                         printf("%s%s%s\n", COL_GREEN, certAlgorithm, RESET);
                                     }
                                     else
                                     {
+                                        printf_xml("   <signature-algorithm strength=\"acceptable\">");
                                         printf("%s\n", certAlgorithm);
                                     }
 
                                     if (options->xmlOutput)
                                     {
-                                        printf_xml("   <signature-algorithm>");
                                         i2a_ASN1_OBJECT(fileBIO, x509Cert->cert_info->signature->algorithm);
                                         printf_xml("</signature-algorithm>\n");
                                     }
@@ -1934,20 +1956,22 @@ int checkCertificate(struct sslCheckOptions *options, const SSL_METHOD *sslMetho
                                                 if (publicKey->pkey.rsa)
                                                 {
                                                     keyBits = BN_num_bits(publicKey->pkey.rsa->n);
+                                                    printf_xml("   <pk error=\"false\" type=\"RSA\" bits=\"%d\" ", BN_num_bits(publicKey->pkey.rsa->n));
                                                     if (keyBits < 2048 )
                                                     {
                                                         printf("RSA Key Strength:    %s%d%s\n", COL_RED, keyBits, RESET);
+                                                        printf_xml("strength=\"weak\" />\n");
                                                     }
                                                     else if (keyBits >= 4096 )
                                                     {
                                                         printf("RSA Key Strength:    %s%d%s\n", COL_GREEN, keyBits, RESET);
+                                                        printf_xml("strength=\"strong\" />\n");
                                                     }
                                                     else
                                                     {
                                                         printf("RSA Key Strength:    %d\n", keyBits);
+                                                        printf_xml("strength=\"acceptable\" />\n");
                                                     }
-
-                                                    printf_xml("   <pk error=\"false\" type=\"RSA\" bits=\"%d\" />\n", BN_num_bits(publicKey->pkey.rsa->n));
                                                 }
                                                 else
                                                 {
@@ -2923,7 +2947,6 @@ int showTrustedCAs(struct sslCheckOptions *options)
     STACK_OF(X509_NAME) *sk2;
     X509_NAME *xn;
 
-
     // Connect to host
     socketDescriptor = tcpConnect(options);
     if (socketDescriptor != 0)
@@ -3000,10 +3023,10 @@ int showTrustedCAs(struct sslCheckOptions *options)
                                 BIO_set_fp(fileBIO, options->xmlOutput, BIO_NOCLOSE);
                             }
 
+                            printf("\n  %sAcceptable client certificate CA names:%s\n", COL_BLUE, RESET);
                             sk2=SSL_get_client_CA_list(ssl);
                             if ((sk2 != NULL) && (sk_X509_NAME_num(sk2) > 0))
                             {
-                                printf("\n  %sAcceptable client certificate CA names:%s\n", COL_BLUE, RESET);
                                 for (tempInt=0; tempInt<sk_X509_NAME_num(sk2); tempInt++)
                                 {
                                     xn=sk_X509_NAME_value(sk2,tempInt);
@@ -3018,6 +3041,10 @@ int showTrustedCAs(struct sslCheckOptions *options)
                                     printf("%s", buffer);
                                     printf("\n");
                                 }
+                            }
+                            else
+                            {
+                                printf("%sNone defined (any)%s\n", COL_YELLOW, RESET);
                             }
 
                             // Free BIO
@@ -3400,7 +3427,7 @@ int testHost(struct sslCheckOptions *options)
     }
 
     // Print client auth trusted CAs
-    if (status == true && options->showTrustedCAs == true)
+    if (options->showTrustedCAs == true)
     {
         status = showTrustedCAs(options);
     }
@@ -3412,6 +3439,35 @@ int testHost(struct sslCheckOptions *options)
     return status;
 }
 
+// Return a string description of an SSL error.
+// It would be nice if there were a standard function for this...
+const char *SSL_ERR_to_string (int sslerr)
+{
+    switch (sslerr)
+    {
+        //  Values taken from openssl/ssl.h
+        case SSL_ERROR_NONE:
+            return "SSL_ERROR_NONE";
+        case SSL_ERROR_SSL:
+            return "SSL_ERROR_SSL";
+        case SSL_ERROR_WANT_READ:
+            return "SSL_ERROR_WANT_READ";
+        case SSL_ERROR_WANT_WRITE:
+            return "SSL_ERROR_WANT_WRITE";
+        case SSL_ERROR_WANT_X509_LOOKUP:
+            return "SSL_ERROR_WANT_X509_LOOKUP";
+        case SSL_ERROR_SYSCALL:
+            return "SSL_ERROR_SYSCALL";
+        case SSL_ERROR_ZERO_RETURN:
+            return "SSL_ERROR_ZERO_RETURN";
+        case SSL_ERROR_WANT_CONNECT:
+            return "SSL_ERROR_WANT_CONNECT";
+        case SSL_ERROR_WANT_ACCEPT:
+            return "SSL_ERROR_WANT_ACCEPT";
+        default:
+            return "SSL_ERROR_UNKNOWN";
+    }
+}
 
 int main(int argc, char *argv[])
 {
