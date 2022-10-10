@@ -9,6 +9,7 @@ endif
 
 # Detect OS
 OS := $(shell uname)
+ARCH := $(shell uname -m)
 
 # Handle different version of Make
 ifeq ($(OS), SunOS)
@@ -28,7 +29,7 @@ BINDIR    = $(PREFIX)/bin
 MANDIR    = $(PREFIX)/share/man
 MAN1DIR   = $(MANDIR)/man1
 
-WARNINGS  = -Wall -Wformat=2 -Wformat-security
+WARNINGS  = -Wall -Wformat=2 -Wformat-security -Wno-deprecated-declarations
 DEFINES   = -DVERSION=\"$(GIT_VERSION)\"
 
 # for dynamic linking
@@ -49,19 +50,23 @@ CFLAGS  += -D_FORTIFY_SOURCE=2 -fstack-protector-all -fPIE
 # Don't enable some hardening flags on OS X because it uses an old version of Clang
 ifneq ($(OS), Darwin)
 ifneq ($(OS), SunOS)
-# Cygwin's linker does not support -z option.
-ifneq ($(findstring CYGWIN,$(OS)),CYGWIN)
-	LDFLAGS += -pie -Wl,-z,relro -Wl,-z,now
+	LDFLAGS += -pie -z relro -z now
 endif
 endif
-endif
+
+# Force C11 mode to fix the build on very old version of GCC
+CFLAGS += -std=gnu11
 
 # for static linking
 ifeq ($(STATIC_BUILD), TRUE)
 PWD          = $(shell pwd)/openssl
 LDFLAGS      += -L${PWD}/
 CFLAGS       += -I${PWD}/include/ -I${PWD}/
-LIBS         = -lssl -lcrypto -lz
+ifeq ($(OS), Darwin)
+LIBS	     = ./openssl/libssl.a ./openssl/libcrypto.a -lz -lpthread
+else
+LIBS         = -lssl -lcrypto -lz -lpthread
+endif
 ifneq ($(OS), FreeBSD)
 	LIBS += -ldl
 endif
@@ -75,6 +80,14 @@ LDFLAGS   += -L/usr/local/lib -L/usr/local/ssl/lib -L/usr/local/opt/openssl/lib 
 CFLAGS    += -I/usr/local/include -I/usr/local/ssl/include -I/usr/local/ssl/include/openssl -I/usr/local/opt/openssl/include -I/opt/local/include -I/opt/local/include/openssl
 endif
 
+# Find the number of processors on the system (used in -j option in building OpenSSL).
+# Uses /usr/bin/nproc if available, otherwise defaults to 1.
+NUM_PROCS = 1
+ifneq (,$(wildcard /usr/bin/nproc))
+	NUM_PROCS = `/usr/bin/nproc --all`
+endif
+
+
 .PHONY: all sslscan clean install uninstall static opensslpull
 
 all: sslscan
@@ -83,7 +96,7 @@ all: sslscan
 	@echo "| WARNING |"
 	@echo "==========="
 	@echo
-	@echo "Building against system OpenSSL. Legacy protocol checks may not be possible."
+	@echo "Building against system OpenSSL. Compression and other checks may not be possible."
 	@echo "It is recommended that you statically build sslscan with  \`make static\`."
 	@echo
 
@@ -114,28 +127,36 @@ uninstall:
 	true
 opensslpull:
 	if [ -d openssl -a -d openssl/.git ]; then \
-		cd ./openssl && git checkout OpenSSL_1_0_2-stable && git pull | grep -q "Already up-to-date." && [ -e ../.openssl.is.fresh ] || touch ../.openssl.is.fresh ; \
+		cd ./openssl && git checkout OpenSSL_1_1_1-stable && git pull | grep -q "Already up-to-date." && [ -e ../.openssl.is.fresh ] || touch ../.openssl.is.fresh ; \
 	else \
-		git clone --depth 1 -b OpenSSL_1_0_2-stable https://github.com/PeterMosmans/openssl ./openssl && cd ./openssl && touch ../.openssl.is.fresh ; \
+		git clone --depth 1 -b OpenSSL_1_1_1-stable https://github.com/openssl/openssl ./openssl && cd ./openssl && touch ../.openssl.is.fresh ; \
 	fi
 
 # Need to build OpenSSL differently on OSX
 ifeq ($(OS), Darwin)
+ifeq ($(ARCH), arm64)
+OSSL_TARGET=darwin64-arm64-cc
+else
+OSSL_TARGET=darwin64-x86_64-cc
+endif
 openssl/Makefile: .openssl.is.fresh
-	cd ./openssl; ./Configure -fstack-protector-all -D_FORTIFY_SOURCE=2 -fPIC enable-ssl2 enable-weak-ssl-ciphers zlib darwin64-x86_64-cc
+	cd ./openssl; ./Configure -fstack-protector-all -D_FORTIFY_SOURCE=2 -fPIC enable-weak-ssl-ciphers zlib $(OSSL_TARGET)
 # Any other *NIX platform
 else
 openssl/Makefile: .openssl.is.fresh
-	cd ./openssl; ./config -fstack-protector-all -D_FORTIFY_SOURCE=2 -fPIC no-shares enable-weak-ssl-ciphers enable-ssl2 zlib
+	cd ./openssl; ./config -v -fstack-protector-all -D_FORTIFY_SOURCE=2 -fPIC no-shared enable-weak-ssl-ciphers zlib
 endif
 
 openssl/libcrypto.a: openssl/Makefile
-	$(MAKE) -C openssl depend
-	$(MAKE) -C openssl all
-	$(MAKE) -C openssl test
+	$(MAKE) -j $(NUM_PROCS) -C openssl depend
+	$(MAKE) -j $(NUM_PROCS) -C openssl all
+#	$(MAKE) -j $(NUM_PROCS) -C openssl test # Disabled because this takes 45+ minutes for OpenSSL v1.1.1.
 
 static: openssl/libcrypto.a
-	$(MAKE) sslscan STATIC_BUILD=TRUE
+	$(MAKE) -j $(NUM_PROCS) sslscan STATIC_BUILD=TRUE
+
+test:	static
+	./docker_test.sh
 
 clean:
 	if [ -d openssl ]; then ( rm -rf openssl ); fi;
