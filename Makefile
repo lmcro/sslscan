@@ -35,7 +35,11 @@ DEFINES   = -DVERSION=\"$(GIT_VERSION)\"
 # for dynamic linking
 LIBS      = -lssl -lcrypto
 ifneq ($(OS), FreeBSD)
+ifneq ($(findstring MINGW64,$(OS)),MINGW64)
 	LIBS += -ldl
+else
+	LIBS += -lwsock32 -lWs2_32
+endif
 endif
 ifeq ($(OS), SunOS)
 	CFLAGS += -m64
@@ -50,7 +54,13 @@ CFLAGS  += -D_FORTIFY_SOURCE=2 -fstack-protector-all -fPIE
 # Don't enable some hardening flags on OS X because it uses an old version of Clang
 ifneq ($(OS), Darwin)
 ifneq ($(OS), SunOS)
+ifneq ($(findstring CYGWIN,$(OS)),CYGWIN)
+ifneq ($(findstring MINGW64,$(OS)),MINGW64)
 	LDFLAGS += -pie -z relro -z now
+else
+	LDFLAGS += -pie
+endif
+endif
 endif
 endif
 
@@ -68,7 +78,9 @@ else
 LIBS         = -lssl -lcrypto -lz -lpthread
 endif
 ifneq ($(OS), FreeBSD)
+ifneq ($(findstring CYGWIN,$(OS)),CYGWIN)
 	LIBS += -ldl
+endif
 endif
 ifeq ($(OS), SunOS)
 	LIBS += -lsocket -lnsl
@@ -86,9 +98,11 @@ NUM_PROCS = 1
 ifneq (,$(wildcard /usr/bin/nproc))
 	NUM_PROCS = `/usr/bin/nproc --all`
 endif
+ifeq ($(OS), Darwin)
+	NUM_PROCS = `sysctl -n hw.ncpu`
+endif
 
-
-.PHONY: all sslscan clean install uninstall static opensslpull
+.PHONY: all sslscan clean realclean install uninstall static opensslpull
 
 all: sslscan
 	@echo
@@ -127,38 +141,31 @@ uninstall:
 	true
 opensslpull:
 	if [ -d openssl -a -d openssl/.git ]; then \
-		cd ./openssl && git checkout OpenSSL_1_1_1-stable && git pull | grep -q "Already up-to-date." && [ -e ../.openssl.is.fresh ] || touch ../.openssl.is.fresh ; \
+		cd ./openssl && git checkout `git ls-remote https://github.com/openssl/openssl | grep -Eo '(openssl-3\.0\.[0-9]+)' | sort --version-sort | tail -n 1` && git pull | grep -q "Already up to date." && [ -e ../.openssl.is.fresh ] || touch ../.openssl.is.fresh ; \
 	else \
-		git clone --depth 1 -b OpenSSL_1_1_1-stable https://github.com/openssl/openssl ./openssl && cd ./openssl && touch ../.openssl.is.fresh ; \
+	git clone --depth 1 -b `git ls-remote https://github.com/openssl/openssl | grep -Eo '(openssl-3\.0\.[0-9]+)' | sort -V | tail -n 1` https://github.com/openssl/openssl ./openssl && cd ./openssl && touch ../.openssl.is.fresh ; \
 	fi
 
-# Need to build OpenSSL differently on OSX
-ifeq ($(OS), Darwin)
-ifeq ($(ARCH), arm64)
-OSSL_TARGET=darwin64-arm64-cc
-else
-OSSL_TARGET=darwin64-x86_64-cc
-endif
 openssl/Makefile: .openssl.is.fresh
-	cd ./openssl; ./Configure -fstack-protector-all -D_FORTIFY_SOURCE=2 -fPIC enable-weak-ssl-ciphers zlib $(OSSL_TARGET)
-# Any other *NIX platform
-else
-openssl/Makefile: .openssl.is.fresh
-	cd ./openssl; ./config -v -fstack-protector-all -D_FORTIFY_SOURCE=2 -fPIC no-shared enable-weak-ssl-ciphers zlib
-endif
+	cd ./openssl; ./Configure -v -fstack-protector-all -D_FORTIFY_SOURCE=2 -fPIC no-shared enable-weak-ssl-ciphers zlib
 
 openssl/libcrypto.a: openssl/Makefile
 	$(MAKE) -j $(NUM_PROCS) -C openssl depend
-	$(MAKE) -j $(NUM_PROCS) -C openssl all
+	$(MAKE) -j $(NUM_PROCS) -C openssl build_libs
 #	$(MAKE) -j $(NUM_PROCS) -C openssl test # Disabled because this takes 45+ minutes for OpenSSL v1.1.1.
 
 static: openssl/libcrypto.a
 	$(MAKE) -j $(NUM_PROCS) sslscan STATIC_BUILD=TRUE
 
+docker:
+	docker build -t sslscan:sslscan .
+
 test:	static
 	./docker_test.sh
 
 clean:
-	if [ -d openssl ]; then ( rm -rf openssl ); fi;
 	rm -f sslscan
+
+realclean: clean
+	if [ -d openssl ]; then ( rm -rf openssl ); fi;
 	rm -f .openssl.is.fresh

@@ -30,7 +30,8 @@ If you are using the XML output, then you may need to make changes to your parse
 
 [![ci](https://github.com/rbsec/sslscan/actions/workflows/ci.yml/badge.svg)](https://github.com/rbsec/sslscan/actions/workflows/ci.yml)
 
-This is a fork of ioerror's version of sslscan (the original readme of which is included below).
+This is a fork of ioerror's version of sslscan (the original readme of which is included below) by rbsec (robin@rbsec.net).
+
 Key changes are as follows:
 
 * Highlight SSLv2 and SSLv3 ciphers in output.
@@ -71,6 +72,7 @@ Key changes are as follows:
 * Check for supported key exchange groups.
 * Check for supported server signature algorithms.
 * Display IANA/RFC cipher names `--iana-names`
+* Display the full certifiate chain `--show-certificates`
 
 ### Building on Linux
 
@@ -91,6 +93,20 @@ This will clone the [OpenSSL repository](https://github.com/openssl/openssl), an
 **Please note:** Out of the box, OpenSSL cannot compiled with `clang` without further customization (which is not done by the provided `Makefile`). For more information on this, see [Modifying Build Settings](http://wiki.openssl.org/index.php/Compilation_and_Installation#Modifying_Build_Settings) in the OpenSSL wiki.
 
 You can verify whether you have a statically linked OpenSSL version, by checking whether the version listed by `sslscan --version` has the `-static` suffix.
+
+### Building with Docker
+
+Ensure that you local Docker installation is functional, and the build the container with:
+
+    make docker
+
+Or manually with:
+
+    docker build -t sslscan:sslscan .
+
+You can then run sslscan with:
+
+    docker run --rm -ti sslscan:sslscan --help
 
 ### Building on Windows
 
